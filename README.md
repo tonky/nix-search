@@ -4,6 +4,8 @@
 
 Fast CLI for searching Nix packages from a local cache.
 
+Live Web App (after deploy): [https://tonky.github.io/nix-search/](https://tonky.github.io/nix-search/)
+
 Disclaimer: this was power-coded with LLM over a couple of hours.
 
 ## Demo (VHS)
@@ -29,6 +31,7 @@ vhs demo/nix-search.tape
 - Script-friendly output modes: `--first`, `--plain`, `--json`
 - Platform-aware ranking/filtering, with `--all-platforms` override
 - Cache management commands: `cache update`, `cache status`, `cache clear`
+- Browser/WebAssembly client with local artifact sync and cache diagnostics
 
 ## Toolchain
 
@@ -44,9 +47,73 @@ If you already have `rustup` installed, opening the repo is enough for Cargo com
 
 For browser-side architecture, operations, and troubleshooting notes, see:
 
-- `impl/wasm-client-side/RUNBOOK.md`
-- `impl/wasm-client-side/PLAN.md`
-- `impl/wasm-client-side/STAGES.md`
+- [impl/wasm-client-side/RUNBOOK.md](impl/wasm-client-side/RUNBOOK.md)
+- [impl/wasm-client-side/PLAN.md](impl/wasm-client-side/PLAN.md)
+- [impl/wasm-client-side/STAGES.md](impl/wasm-client-side/STAGES.md)
+
+Additional implementation tracks:
+
+- [impl/storage-diagnostics-ui/PLAN.md](impl/storage-diagnostics-ui/PLAN.md)
+- [impl/browser-e2e-and-hydration-progress/PLAN.md](impl/browser-e2e-and-hydration-progress/PLAN.md)
+
+## Web/WASM App
+
+The web client lives in [crates/nix-search-web](crates/nix-search-web) and reuses shared search logic from [crates/nix-search-core](crates/nix-search-core).
+
+Deployed static page: [https://tonky.github.io/nix-search/](https://tonky.github.io/nix-search/)
+
+### Local web dev
+
+1. Prepare local web data artifact and manifest:
+
+```bash
+just prep-web
+```
+
+2. Sync prepared data into static assets served by the web app:
+
+```bash
+just sync-web-data
+```
+
+3. Run Trunk dev server:
+
+```bash
+cd crates/nix-search-web
+trunk serve --address 127.0.0.1 --port 4173
+```
+
+Or use the single-command manual verify flow from repo root:
+
+```bash
+just verify-manual
+```
+
+### Browser E2E tests
+
+Install Playwright dependencies:
+
+```bash
+just e2e-install
+```
+
+Run cross-browser smoke/diagnostics suite:
+
+```bash
+just e2e-test
+```
+
+Specs and config are in [tests/e2e](tests/e2e).
+
+### Publishing data artifacts
+
+The GitHub Actions workflow [wasm-data-publish.yml](.github/workflows/wasm-data-publish.yml) builds the prep artifact and deploys it to GitHub Pages.
+
+You can run the same prep path locally:
+
+```bash
+cargo run -- prep-web --output tmp/pages-data
+```
 
 ## Examples
 
