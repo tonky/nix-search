@@ -1,0 +1,113 @@
+version = 1
+last_updated = "2026-04-08"
+
+[[item]]
+id = "WFU-001"
+title = "Manual desktop/mobile viewport verification for stage-08 shell"
+category = "active"
+status = "pending-manual"
+reason = "Requires interactive browser viewport checks; implementation and build validation are complete, but explicit visual confirmation at representative desktop/mobile sizes still needs to be performed."
+
+[[item]]
+id = "WFU-002"
+title = "Evaluate browser E2E automation for wasm app stability and cache flows (Playwright + Firefox)"
+category = "active"
+status = "deferred"
+reason = "Valuable for preventing regressions in startup freeze, refresh cache transaction failures, and persistence behavior, but should be scoped as a dedicated follow-up effort."
+proposed_scope = [
+  "startup no-freeze assertion and shell visibility timeout",
+  "refresh success path with IndexedDB write verification",
+  "refresh failure fallback with preserved previous cache",
+  "reload persistence validation from local IndexedDB",
+]
+proposed_ci = [
+  "run Playwright Firefox job against local trunk server",
+]
+decision_needed = [
+  "confirm tooling choice (Playwright vs wasm-bindgen browser tests)",
+  "confirm acceptable CI runtime budget",
+]
+
+[[item]]
+id = "WFU-008"
+title = "Speed up prep-web for local dev loop"
+category = "completed"
+status = "completed"
+reason = "Implemented cached prep fast-path in justfile (`prep-web force=0`) and fixed verify-manual watch/dist settings to keep local loop fast and stable."
+
+[[item]]
+id = "WFU-003"
+title = "Install trunk with flox"
+category = "deferred"
+status = "deferred"
+reason = "Stage-02 validated by installing trunk via cargo/rustup-managed flow; flox integration can be decided later as a dev-environment consistency task."
+
+[[item]]
+id = "WFU-004"
+title = "Investigate local GitHub workflow testing via act (install with flox)"
+category = "deferred"
+status = "deferred"
+reason = "Useful for local CI simulation, but out of Stage 04 implementation scope; can be evaluated as a tooling enhancement after Stage 05/06 when more workflows exist."
+
+[[item]]
+id = "WFU-005"
+title = "Add justfile with common commands and local dev server workflow"
+category = "completed"
+status = "completed"
+reason = "Implemented via repository root justfile with prep, verify, check, build, and latency probe commands."
+
+[[item]]
+id = "WFU-006"
+title = "Add browser E2E coverage for storage diagnostics panel and storage-constrained fallback"
+category = "completed"
+status = "completed"
+reason = "Implemented in Playwright suite via diagnostics panel assertions and constrained-storage fallback simulation test."
+proposed_scope = [
+  "assert diagnostics panel opens and reports probe fields",
+  "assert session-only fallback text when IndexedDB write probe fails",
+  "capture diagnostics snapshot in Playwright traces on failure",
+]
+
+[[item]]
+id = "WFU-007"
+title = "Evaluate compact on-disk browser cache representation for large package corpus"
+category = "active"
+status = "deferred"
+reason = "Even with stale-key pruning, 140k+ package payloads can occupy large IndexedDB footprints (especially Safari). Evaluate compact encoding or schema split to reduce storage overhead."
+proposed_scope = [
+  "measure per-field contribution (attr/version/pname/description/platforms)",
+  "evaluate dictionary encoding for repeated strings",
+  "consider splitting long description from hot search fields",
+]
+
+[[stage_check]]
+stage = "stage-03"
+result = "No additional stage-03 follow-up items identified."
+
+[[stage_check]]
+stage = "stage-04"
+result = "No additional mandatory follow-up work needed to complete stage-04 scope."
+
+[[stage_check]]
+stage = "stage-05"
+result = "No new mandatory follow-up required for stage-05 scope; optional future hardening can add checksum-based equality check in startup sync."
+
+[[stage_check]]
+stage = "stage-06"
+result = "No additional mandatory follow-up required for stage-06 scope."
+
+[[stage_check]]
+stage = "stage-07"
+result = "No additional mandatory implementation follow-up; remaining work is manual runtime validation for unchanged/new-version/network-failure refresh scenarios in browser."
+
+[[stage_check]]
+stage = "stage-08"
+result = "Stage-08 is implementation-complete with recorded latency baselines; one manual viewport verification task remains before final stage closure."
+
+[[stage_check]]
+stage = "storage-diagnostics-ui/stage-01"
+result = "Stage implemented and compile-validated; dedicated browser E2E coverage for diagnostics panel and constrained-storage scenarios has been added."
+
+[[stage_check]]
+stage = "cache-refresh-pruning"
+result = "Added stale package-key pruning after successful refresh writes to reduce long-term IndexedDB growth; compile-validated."

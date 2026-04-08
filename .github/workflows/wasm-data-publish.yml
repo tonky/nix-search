@@ -1,0 +1,84 @@
+name: Publish WASM Data Artifacts
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages-wasm-data
+  cancel-in-progress: true
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.manifest.outputs.version }}
+      package_count: ${{ steps.manifest.outputs.package_count }}
+      checksum: ${{ steps.manifest.outputs.checksum }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build prep command
+        run: cargo build --bin nix-search
+
+      - name: Ensure jq is available
+        run: |
+          if ! command -v jq >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y jq
+          fi
+
+      - name: Run local prep command
+        run: cargo run -- prep-web --output tmp/pages-data
+
+      - name: Read manifest values
+        id: manifest
+        run: |
+          MANIFEST="tmp/pages-data/manifest.json"
+          echo "version=$(jq -r '.version' "$MANIFEST")" >> "$GITHUB_OUTPUT"
+          echo "package_count=$(jq -r '.package_count' "$MANIFEST")" >> "$GITHUB_OUTPUT"
+          echo "checksum=$(jq -r '.checksum' "$MANIFEST")" >> "$GITHUB_OUTPUT"
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: tmp/pages-data
+
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    needs: prepare
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+      - name: Run summary
+        run: |
+          {
+            echo "## WASM Data Publish"
+            echo
+            echo "- Version: ${{ needs.prepare.outputs.version }}"
+            echo "- Package count: ${{ needs.prepare.outputs.package_count }}"
+            echo "- Checksum: ${{ needs.prepare.outputs.checksum }}"
+            echo "- Page URL: ${{ steps.deployment.outputs.page_url }}"
+            echo "- Manifest URL: ${{ steps.deployment.outputs.page_url }}manifest.json"
+          } >> "$GITHUB_STEP_SUMMARY"

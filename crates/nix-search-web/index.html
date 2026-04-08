@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>nix-search web</title>
+    <link data-trunk rel="css" href="./static/app.css" />
+    <link data-trunk rel="copy-file" href="./static/sw.js" />
+    <link data-trunk rel="copy-dir" href="./static/data" />
+    <link data-trunk rel="rust" data-bin="nix-search-web" data-wasm-opt="z" />
+  </head>
+  <body>
+    <script>
+      if ("serviceWorker" in navigator) {
+        window.addEventListener("load", function () {
+          const host = window.location.hostname;
+          const isLocalHost =
+            host === "localhost" || host === "127.0.0.1" || host === "::1";
+
+          if (isLocalHost) {
+            navigator.serviceWorker.getRegistrations().then(function (registrations) {
+              registrations.forEach(function (registration) {
+                registration.unregister();
+              });
+            });
+            return;
+          }
+
+          navigator.serviceWorker.register("/sw.js").catch(function () {
+            // Service worker registration failure should not block app startup.
+          });
+        });
+      }
+    </script>
+  </body>
+</html>

@@ -1,0 +1,24 @@
+[package]
+name = "nix-search-web"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+anyhow = "1.0.100"
+clap = { version = "4.5.51", features = ["derive"] }
+leptos = { version = "0.8.11", features = ["csr"] }
+nix-search-core = { path = "../nix-search-core" }
+console_error_panic_hook = "0.1.7"
+gloo-net = "0.6.0"
+gloo-timers = { version = "0.3.0", features = ["futures"] }
+rexie = "0.6.2"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+serde-wasm-bindgen = "0.6.5"
+thiserror = "2.0.18"
+wasm-bindgen-futures = "0.4.67"
+js-sys = "0.3.94"
+web-sys = { version = "0.3.94", features = ["Window", "Location", "Navigator", "console"] }

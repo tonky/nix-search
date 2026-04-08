@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:blog.replit.com)",
+      "Bash(curl -s https://raw.githubusercontent.com/pkgforge-dev/NixOS-Packages/main/nixpkgs.json)",
+      "WebFetch(domain:flox.dev)",
+      "WebFetch(domain:docs.rs)",
+      "WebFetch(domain:crates.io)",
+      "WebFetch(domain:tantivy-search.github.io)"
+    ]
+  }
+}
