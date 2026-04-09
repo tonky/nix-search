@@ -1,42 +1,132 @@
-it's april 2026, use moderl libraries, frameworks and industry standards.
+April 2026 guidance: use modern libraries, frameworks, and industry standards.
 
-don't start non-trivial implementation if it's not planned in detail. investigate and write down plan and stages into 'impl/<year-month-feature_name>' before starting work. actively encourage user to do this.
+## Planning First (Required)
 
-write down inital feature description into DESCRIPTION.md in feature dir. investigate, iterate and confirm with user on high level implementation plan. write down agreed high level plan into PLAN.md.
+Do not start non-trivial implementation without detailed planning.
 
-after plan is written - confirm its correctness witth user, before breaking work down into stages, each being independently implemented and verifiable, that could be implemented in 8 hours of work, with enough details and context.
-use substages with separate file per substage, if individual stage scope is too big.
-write down those stages as separate files.
+Before implementation:
 
-before asking user to review planned stages - launch a subagent to investigate and verify that stages cover plan, order is correct and check for overall improvements or reorders.
+1. Create a feature planning directory:
+	- `impl/<year-month-feature_name>`
+2. Encourage the user to follow this process.
+3. Write initial feature description to:
+	- `DESCRIPTION.md`
+4. Investigate and iterate on a high-level plan with the user.
+5. Don't start with a plan, until explicit confirmation from user on description readiness.
+6. Write the agreed high-level plan to:
+	- `PLAN.md`
 
-before starting implementing a stage - investigate it and clarify, if needed, any questions, inconsistencies or suggested improvements for this stage.
+After writing the high-level plan:
 
-after stage implementation is clear - start working on it autonomously until stage is done.
+1. Confirm plan correctness with the user, iterate on it until explicit confirmation from user on plan readiness.
+2. Break work into independently verifiable stages.
+3. Keep each stage scoped to about 8 hours of work.
+4. If a stage is too large, split into substages and use separate files.
+5. Store stage definitions as separate files in the feature directory.
 
-after stage is completed -  run review in subagent for conformance to planned work, assess it, fix any discrepancies and notify user of stage completion.
+Before asking the user to review planned stages:
 
-put improvement ideas, postponed work and follow ups into FOLLOW_UP.tml in impl feature with minimum context and description that it can be reviewed and potentially implemented later.
+1. Launch a subagent to verify:
+	- Stage coverage vs plan
+	- Stage ordering
+	- Possible improvements or reordering
 
-minimal follow-up TOML example:
+## Stage Execution Workflow
 
+Before starting a stage:
+
+1. Investigate the stage.
+2. Clarify open questions, inconsistencies, and suggested improvements.
+
+When stage scope is clear:
+
+1. Implement autonomously until the stage is complete.
+
+After stage completion:
+
+1. Run a subagent review for conformance with planned work.
+2. Assess findings.
+3. Fix discrepancies.
+4. Notify the user that the stage is complete.
+
+## Documentation During Execution
+
+For each stage:
+
+1. Maintain a `WORKLOG.md`.
+2. Keep it updated with progress, decisions, and tradeoffs.
+
+For follow-ups in the feature directory:
+
+1. Record postponed work, improvements, and ideas in:
+	- `FOLLOW_UP.toml`
+2. Keep entries minimal but actionable.
+
+Minimal follow-up example:
+
+```toml
 [[item]]
 title = "Investigate browser E2E coverage"
+```
 
-keep WORKLOG.md per stage of your progress and important decisions/tradeoffs made, and remember to keep updating them.
+After each stage (and subagent review):
 
-after each stage is complete with subagent review:
- - check feature FOLLOW_UP.toml for any work that can improve or extend implemented stage or other aspects of what was already implemented before. defer ones that should be implemented later or unclear.
-
-
-
+1. Re-check `FOLLOW_UP.toml`.
+2. Identify possible improvements/extensions to completed work.
+3. Defer items that should be implemented later or are unclear.
 
 
- -----------------
- don't use global /tmp for temporary files, use repo local 'tmp/' dir to avoid problems with permissions.
+## Operational Rules
 
- aim for good test coverage, prefer high level and end to end tests that validate behavior.
+1. Do not use global `/tmp` for temporary files.
+2. Use repository-local `tmp/` instead.
+3. Aim for strong test coverage.
+4. Prefer high-level and end-to-end behavior validation.
+5. Use `flox` for local dependencies.
+6. Do not use `brew` on macOS.
+7. Use `act` to run and verify GitHub Actions locally when possible.
 
- use 'flox' for any local dependency that you need. do not use brew on macos.
+## Templates and formatting
 
- use 'act' to run and verify github actions locally, where possible.
+### Stage File Template
+
+Each stage is stored as a separate file in the feature directory. Use this template:
+
+```markdown
+# Stage NN: <Title>
+
+Estimated time: N-M hours
+Depends on: [stage-NN-prev.md](stage-NN-prev.md)
+
+## Goal
+
+One paragraph describing what this stage achieves and why.
+
+## Scope
+
+In scope:
+- ...
+
+Out of scope:
+- ...
+
+## Checklist
+
+- [ ] Task one
+- [ ] Task two
+
+## Validation
+
+Run:
+
+```bash
+<build or test command>
+```
+
+Manual checks:
+- ...
+
+## Exit Criteria
+
+- Bullet list of observable outcomes that confirm the stage is done.
+``
