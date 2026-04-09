@@ -1,0 +1,33 @@
+# Stage 01 Worklog
+
+## 2026-04-09
+- Stage planned; implementation not started.
+- Expected outputs: benchmark tasks, release-path `just` targets, CI budget checks.
+- Implemented scripts:
+	- `scripts/perf/snapshot.sh` for timestamped perf+size snapshots under `tmp/bench/`
+	- `scripts/perf/check_budgets.sh` for size ceilings + warning-level runtime probe
+- Added `just` tasks:
+	- `prep-web-fast`
+	- `cache-update-fast`
+	- `perf-size-snapshot`
+	- `perf-size-budget-check`
+- Added CI workflow `.github/workflows/perf-size-budget.yml` for PR/manual budget checks.
+- Updated `README.md` with release-path guidance and perf/size commands.
+- Subagent review identified a portability bug in `scripts/perf/snapshot.sh` (hardcoded user target path).
+- Fixed by resolving target directory dynamically via `CARGO_TARGET_DIR`/`cargo metadata` and validating artifact presence.
+- Stage status: implementation complete, pending/finished local verification with new commands.
+- User feedback: long-running commands looked stuck.
+- Added explicit progress bars + heartbeat logging (elapsed seconds) for long steps in:
+	- `scripts/perf/snapshot.sh`
+	- `scripts/perf/check_budgets.sh`
+- Added per-artifact measurement messages for wasm/js/data compression step.
+- Added two-tier automation for speed:
+	- quick local mode default (`PERF_MODE=quick`)
+	- full CI mode (`PERF_MODE=full`)
+- Added non-blocking runner `just perf-size-budget-check-bg` with log/summary paths.
+- Fixed summary parsing bug caused by heartbeat output contaminating TSV parsing.
+- Verified quick background run summary now includes populated metrics:
+	- wasm_raw=665164 wasm_brotli=217649
+	- js_raw=54688 js_brotli=8698
+	- data_brotli=2837023 (q=4 quick-mode informational)
+- Cleaned accidental directories from earlier arg-format bug (`out=tmp`, `out_dir=tmp`).

@@ -1,0 +1,46 @@
+name: Perf and Size Budget
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  budget:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq brotli
+
+      - name: Install Trunk
+        uses: taiki-e/install-action@v2
+        with:
+          tool: trunk@0.21.14
+
+      - name: Ensure wasm target is available
+        run: rustup target add wasm32-unknown-unknown
+
+      - name: Run perf/size budget checks
+        run: |
+          PERF_MODE=full \
+          SEARCH_P95_WARN_MS=45 \
+          SEARCH_P95_FAIL_MS=120 \
+          scripts/perf/check_budgets.sh tmp/bench/perf-size-ci
+
+      - name: Upload perf/size artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-size-ci
+          path: tmp/bench/perf-size-ci

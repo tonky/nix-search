@@ -1,0 +1,33 @@
+[[item]]
+title = "Evaluate binary payload format for web package corpus"
+
+[[item]]
+title = "Explore split artifacts by platform for first-load reduction"
+
+[[item]]
+title = "Investigate HTTP cache-control and precompressed static serving on Pages"
+
+[[item]]
+title = "Add index write determinism check across forced serial vs parallel thresholds"
+
+[[item]]
+title = "Add memory-pressure test around low NIX_SEARCH_INDEX_WRITER_BYTES values"
+
+[[item]]
+title = "Design background/periodic stale-key prune so refresh stays fast without cache bloat"
+
+[[item]]
+title = "Extend latency probe with refresh-path timings and warm-cache scenarios"
+
+[[item]]
+title = "Add browser-level input-to-render latency probe for search typing responsiveness"
+
+[[item]]
+title = "Add rapid-fire query E2E scenario to stress stale-search-job cancellation"
+
+[[item]]
+title = "Add E2E coverage for startup and refresh fallback under storage/offline failure modes"
+
+[[item]]
+title = "Pin taiki-e/install-action to commit SHA after evaluating update policy"
+

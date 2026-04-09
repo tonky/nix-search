@@ -1,10 +1,12 @@
 use std::fs;
 use std::io::Read;
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
 use nix_search_core::types::Package;
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -24,6 +26,11 @@ pub struct PrepManifest {
     pub package_count: usize,
     pub built_at: u64,
     pub artifact: String,
+    // Optional compressed payload metadata. Consumers should always support
+    // fallback to `artifact` if compressed fields are absent or unusable.
+    pub compressed_artifact: Option<String>,
+    pub compressed_format: Option<String>,
+    pub compressed_size_bytes: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -34,21 +41,68 @@ pub struct PrepOutput {
 }
 
 pub async fn run_local_prep(output_dir: &Path) -> anyhow::Result<PrepOutput> {
+    let t_total = Instant::now();
+
     fs::create_dir_all(output_dir)
         .with_context(|| format!("failed to create output directory {}", output_dir.display()))?;
 
+    let t_fetch_parse = Instant::now();
     let packages = fetch_and_parse_packages().await?;
+    let fetch_parse_ms = t_fetch_parse.elapsed().as_millis();
     let built_at = now_epoch();
 
+    let t_serialize = Instant::now();
     let prepared = PreparedData { packages };
     let artifact_bytes = serde_json::to_vec(&prepared).context("failed to encode artifact JSON")?;
+    let serialize_ms = t_serialize.elapsed().as_millis();
+
+    let t_hash = Instant::now();
     let checksum = checksum_hex(&artifact_bytes);
     let version = version_from_checksum(&checksum);
+    let hash_ms = t_hash.elapsed().as_millis();
+
     let artifact_name = format!("packages-{}.json", version);
     let artifact_path = output_dir.join(&artifact_name);
 
+    let t_write_artifact = Instant::now();
     fs::write(&artifact_path, artifact_bytes)
         .with_context(|| format!("failed to write artifact {}", artifact_path.display()))?;
+    let write_artifact_ms = t_write_artifact.elapsed().as_millis();
+
+    let t_compress = Instant::now();
+    let compressed_artifact_name = format!("packages-{}.json.br", version);
+    let compressed_artifact_path = output_dir.join(&compressed_artifact_name);
+    let (compressed_artifact, compressed_format, compressed_size_bytes) =
+        match compress_brotli(&fs::read(&artifact_path)?, 4) {
+            Ok(compressed_bytes) => {
+                if let Err(err) = fs::write(&compressed_artifact_path, &compressed_bytes)
+                    .with_context(|| {
+                        format!(
+                            "failed to write compressed artifact {}",
+                            compressed_artifact_path.display()
+                        )
+                    })
+                {
+                    eprintln!(
+                        "[warn][prep-web] compression write failed; continuing with uncompressed artifact only: {err}"
+                    );
+                    (None, None, None)
+                } else {
+                    (
+                        Some(compressed_artifact_name),
+                        Some("brotli".to_string()),
+                        Some(compressed_bytes.len()),
+                    )
+                }
+            }
+            Err(err) => {
+                eprintln!(
+                    "[warn][prep-web] compression failed; continuing with uncompressed artifact only: {err}"
+                );
+                (None, None, None)
+            }
+        };
+    let compress_ms = t_compress.elapsed().as_millis();
 
     let manifest = PrepManifest {
         version,
@@ -56,13 +110,31 @@ pub async fn run_local_prep(output_dir: &Path) -> anyhow::Result<PrepOutput> {
         package_count: prepared.packages.len(),
         built_at,
         artifact: artifact_name,
+        compressed_artifact,
+        compressed_format,
+        compressed_size_bytes,
     };
     let manifest_path = output_dir.join("manifest.json");
+
+    let t_write_manifest = Instant::now();
     fs::write(
         &manifest_path,
         serde_json::to_vec_pretty(&manifest).context("failed to encode manifest JSON")?,
     )
     .with_context(|| format!("failed to write manifest {}", manifest_path.display()))?;
+    let write_manifest_ms = t_write_manifest.elapsed().as_millis();
+
+    eprintln!(
+        "[perf][prep-web] packages={} fetch_parse_ms={} serialize_ms={} hash_ms={} write_artifact_ms={} compress_ms={} write_manifest_ms={} total_ms={}",
+        prepared.packages.len(),
+        fetch_parse_ms,
+        serialize_ms,
+        hash_ms,
+        write_artifact_ms,
+        compress_ms,
+        write_manifest_ms,
+        t_total.elapsed().as_millis()
+    );
 
     Ok(PrepOutput {
         manifest_path,
@@ -99,17 +171,32 @@ async fn fetch_and_parse_packages() -> anyhow::Result<Vec<Package>> {
 }
 
 fn filter_web_platforms(packages: Vec<Package>) -> Vec<Package> {
-    let mut out = Vec::with_capacity(packages.len());
-
-    for mut pkg in packages {
-        pkg.platforms
-            .retain(|p| WEB_TARGET_PLATFORMS.iter().any(|target| target == p));
-        if !pkg.platforms.is_empty() {
-            out.push(pkg);
-        }
-    }
-
+    let mut out = packages
+        .into_par_iter()
+        .filter_map(|mut pkg| {
+            pkg.platforms
+                .retain(|p| WEB_TARGET_PLATFORMS.iter().any(|target| target == p));
+            if pkg.platforms.is_empty() {
+                None
+            } else {
+                Some(pkg)
+            }
+        })
+        .collect::<Vec<_>>();
+    out.sort_unstable_by(|a, b| a.attr_path.cmp(&b.attr_path));
     out
+}
+
+fn compress_brotli(bytes: &[u8], quality: u32) -> anyhow::Result<Vec<u8>> {
+    let mut out = Vec::new();
+    {
+        let mut writer = brotli::CompressorWriter::new(&mut out, 64 * 1024, quality, 22);
+        writer
+            .write_all(bytes)
+            .context("failed to write brotli payload")?;
+        writer.flush().context("failed to flush brotli payload")?;
+    }
+    Ok(out)
 }
 
 async fn fetch_channel_packages_with_retry(
@@ -267,12 +354,21 @@ mod tests {
             package_count: 42,
             built_at: 1_700_000_000,
             artifact: "packages-sha256-123456789abc.json".to_string(),
+            compressed_artifact: Some("packages-sha256-123456789abc.json.br".to_string()),
+            compressed_format: Some("brotli".to_string()),
+            compressed_size_bytes: Some(1234),
         };
 
         let value = serde_json::to_value(manifest).unwrap();
         assert_eq!(value["package_count"], 42);
         assert_eq!(value["checksum"], "123456789abcdef0");
         assert_eq!(value["artifact"], "packages-sha256-123456789abc.json");
+        assert_eq!(
+            value["compressed_artifact"],
+            "packages-sha256-123456789abc.json.br"
+        );
+        assert_eq!(value["compressed_format"], "brotli");
+        assert_eq!(value["compressed_size_bytes"], 1234);
     }
 
     #[test]
@@ -303,9 +399,19 @@ mod tests {
 
         let filtered = filter_web_platforms(pkgs);
         assert_eq!(filtered.len(), 2);
-        assert_eq!(filtered[0].attr_path, "foo");
-        assert_eq!(filtered[0].platforms, vec!["x86_64-linux"]);
-        assert_eq!(filtered[1].attr_path, "bar");
-        assert_eq!(filtered[1].platforms, vec!["aarch64-darwin"]);
+
+        let by_attr = filtered
+            .into_iter()
+            .map(|p| (p.attr_path, p.platforms))
+            .collect::<std::collections::BTreeMap<_, _>>();
+
+        assert_eq!(
+            by_attr.get("foo").cloned().unwrap_or_default(),
+            vec!["x86_64-linux"]
+        );
+        assert_eq!(
+            by_attr.get("bar").cloned().unwrap_or_default(),
+            vec!["aarch64-darwin"]
+        );
     }
 }

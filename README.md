@@ -89,6 +89,50 @@ Or use the single-command manual verify flow from repo root:
 just verify-manual
 ```
 
+### Performance-oriented local commands
+
+For heavy data transforms (`prep-web`, `cache update`), release mode is materially faster.
+
+- Prepare web data quickly (release profile):
+
+```bash
+just prep-web-fast
+```
+
+- Update local index quickly (release profile):
+
+```bash
+just cache-update-fast
+```
+
+- Capture a perf/size snapshot report under `tmp/bench/perf-size-<timestamp>/`:
+
+```bash
+just perf-size-snapshot
+```
+
+- Run size/runtime budget checks locally:
+
+```bash
+just perf-size-budget-check
+```
+
+- Run full CI-equivalent checks locally (slower):
+
+```bash
+just perf-size-budget-check-full
+```
+
+Full mode now enforces a hard search-latency gate (`search_p95_ms`), while still reporting warning-level drift thresholds.
+
+- Run quick checks in background (non-blocking) and inspect progress:
+
+```bash
+just perf-size-budget-check-bg
+tail -f tmp/bench/perf-size-ci-bg/run.log
+cat tmp/bench/perf-size-ci-bg/summary.txt
+```
+
 ### Browser E2E tests
 
 Install Playwright dependencies:

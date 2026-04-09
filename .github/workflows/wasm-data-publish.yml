@@ -38,7 +38,9 @@ jobs:
         run: cargo build --bin nix-search
 
       - name: Install Trunk
-        run: cargo install --locked trunk
+        uses: taiki-e/install-action@v2
+        with:
+          tool: trunk@0.21.14
 
       - name: Ensure wasm target is available
         run: rustup target add wasm32-unknown-unknown

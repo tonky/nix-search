@@ -1,13 +1,14 @@
 mod cache_sync;
 mod search_runtime;
 
-use std::cell::RefCell;
-use std::collections::BTreeSet;
+use std::cell::{Cell, RefCell};
+use std::collections::{BTreeSet, VecDeque};
 use std::rc::Rc;
 
 use gloo_timers::callback::Timeout;
 use gloo_timers::future::TimeoutFuture;
 use leptos::prelude::*;
+use nix_search_core::search::SearchResults as CoreSearchResults;
 use nix_search_core::types::Package;
 use wasm_bindgen_futures::spawn_local;
 
@@ -24,6 +25,24 @@ enum AppState {
     StartupLoading,
     Ready,
     Error,
+}
+
+const SEARCH_VISIBLE_RESULT_LIMIT: usize = 48;
+
+#[derive(Clone)]
+enum SearchMsg {
+    InputChanged(String),
+    DebouncedQueryReady(String),
+    RunSearch {
+        query: String,
+        selected_platform: Option<String>,
+        all_platforms: bool,
+    },
+    SearchComputed {
+        epoch: u64,
+        results: CoreSearchResults,
+        elapsed_ms: f64,
+    },
 }
 
 #[component]
@@ -48,29 +67,138 @@ fn App() -> impl IntoView {
     let last_search_latency_ms = RwSignal::new(None::<f64>);
     let startup_progress = RwSignal::new(0.02f64);
     let startup_message = RwSignal::new("Loading cache metadata...".to_string());
-    let search_results = RwSignal::new(nix_search_core::search::SearchResults::default());
+    let search_results = RwSignal::new(CoreSearchResults::default());
     let deferred_hydration_started = RwSignal::new(false);
     let deferred_hydration_running = RwSignal::new(false);
+    let search_job_epoch = Rc::new(Cell::new(0u64));
+    let search_msg_queue = Rc::new(RefCell::new(VecDeque::<SearchMsg>::new()));
+    let search_msg_scheduled = Rc::new(Cell::new(false));
+    let search_dispatch_slot: Rc<RefCell<Option<Rc<dyn Fn(SearchMsg)>>>> =
+        Rc::new(RefCell::new(None));
+
+    let search_dispatch: Rc<dyn Fn(SearchMsg)> = {
+        let queue = Rc::clone(&search_msg_queue);
+        let scheduled = Rc::clone(&search_msg_scheduled);
+        let epoch = Rc::clone(&search_job_epoch);
+        let rows_sig = rows;
+        let query_raw_sig = query_raw;
+        let query_sig = query;
+        let search_results_sig = search_results;
+        let last_search_latency_sig = last_search_latency_ms;
+        let dispatch_slot = Rc::clone(&search_dispatch_slot);
+
+        Rc::new(move |msg: SearchMsg| {
+            queue.borrow_mut().push_back(msg);
+
+            if scheduled.replace(true) {
+                return;
+            }
+
+            let queue = Rc::clone(&queue);
+            let scheduled = Rc::clone(&scheduled);
+            let epoch = Rc::clone(&epoch);
+            let rows_sig = rows_sig;
+            let query_raw_sig = query_raw_sig;
+            let query_sig = query_sig;
+            let search_results_sig = search_results_sig;
+            let last_search_latency_sig = last_search_latency_sig;
+            let dispatch_slot = Rc::clone(&dispatch_slot);
+
+            spawn_local(async move {
+                // Yield once so input events and paint get priority before reducer work.
+                TimeoutFuture::new(0).await;
+
+                loop {
+                    while let Some(next) = queue.borrow_mut().pop_front() {
+                        match next {
+                            SearchMsg::InputChanged(value) => {
+                                query_raw_sig.set(value);
+                            }
+                            SearchMsg::DebouncedQueryReady(value) => {
+                                query_sig.set(value);
+                            }
+                            SearchMsg::RunSearch {
+                                query,
+                                selected_platform,
+                                all_platforms,
+                            } => {
+                                let next_epoch = epoch.get().wrapping_add(1);
+                                epoch.set(next_epoch);
+
+                                let rows_sig = rows_sig;
+                                let dispatch_slot = Rc::clone(&dispatch_slot);
+
+                                spawn_local(async move {
+                                    TimeoutFuture::new(0).await;
+                                    let started = perf_now_ms();
+                                    let computed = rows_sig.with_untracked(|all| {
+                                        run_search(
+                                            all,
+                                            &query,
+                                            selected_platform.as_deref(),
+                                            all_platforms,
+                                            SEARCH_VISIBLE_RESULT_LIMIT,
+                                        )
+                                    });
+                                    let elapsed_ms = perf_now_ms() - started;
+
+                                    let dispatch = dispatch_slot.borrow().as_ref().cloned();
+                                    if let Some(dispatch) = dispatch {
+                                        dispatch(SearchMsg::SearchComputed {
+                                            epoch: next_epoch,
+                                            results: computed,
+                                            elapsed_ms,
+                                        });
+                                    }
+                                });
+                            }
+                            SearchMsg::SearchComputed {
+                                epoch: done_epoch,
+                                results,
+                                elapsed_ms,
+                            } => {
+                                if done_epoch == epoch.get() {
+                                    search_results_sig.set(results);
+                                    last_search_latency_sig.set(Some(elapsed_ms));
+                                }
+                            }
+                        }
+                    }
+
+                    scheduled.set(false);
+                    if queue.borrow().is_empty() {
+                        break;
+                    }
+                    if scheduled.replace(true) {
+                        break;
+                    }
+                }
+            });
+        })
+    };
+
+    *search_dispatch_slot.borrow_mut() = Some(Rc::clone(&search_dispatch));
 
     let debounce_handle = Rc::new(RefCell::new(None::<Timeout>));
 
     Effect::new({
         let debounce_handle = Rc::clone(&debounce_handle);
+        let search_dispatch = Rc::clone(&search_dispatch);
         move |_| {
             let next_q = query_raw.get();
             if let Some(prev) = debounce_handle.borrow_mut().take() {
                 prev.cancel();
             }
-            let query_signal = query;
             let mut slot = debounce_handle.borrow_mut();
+            let dispatch = Rc::clone(&search_dispatch);
             *slot = Some(Timeout::new(120, move || {
-                query_signal.set(next_q.clone());
+                dispatch(SearchMsg::DebouncedQueryReady(next_q.clone()));
             }));
         }
     });
 
     spawn_local(async move {
-        let started = js_sys::Date::now();
+        let started = perf_now_ms();
         startup_message.set("Syncing local and remote cache...".to_string());
         startup_progress.set(0.10);
         match cache_sync::startup_status().await {
@@ -89,7 +217,9 @@ fn App() -> impl IntoView {
                 app_state.set(AppState::Ready);
             }
         }
-        startup_latency_ms.set(Some(js_sys::Date::now() - started));
+        let elapsed = perf_now_ms() - started;
+        startup_latency_ms.set(Some(elapsed));
+        log_perf(&format!("startup.status_ms={elapsed:.1}"));
     });
 
     Effect::new(move |_| {
@@ -109,17 +239,25 @@ fn App() -> impl IntoView {
         let deferred_running_sig = deferred_hydration_running;
 
         spawn_local(async move {
+            let hydration_started = perf_now_ms();
+
             // Let first paint complete before background hydration starts.
             TimeoutFuture::new(180).await;
 
             match cache_sync::load_cached_packages_only().await {
                 Ok(packages) => {
+                    let load_ms = perf_now_ms() - hydration_started;
+                    log_perf(&format!(
+                        "startup.hydration.load_cached_ms={load_ms:.1} packages={}",
+                        packages.len()
+                    ));
+
                     if packages.is_empty() {
                         cache_status_sig.set(
                             "Cache status: no local package cache yet; use Refresh Cache".to_string(),
                         );
                     } else {
-                        apply_packages_async(
+                        let map_ms = apply_packages_async(
                             rows_sig,
                             selected_attr_sig,
                             selected_platform_sig,
@@ -127,6 +265,9 @@ fn App() -> impl IntoView {
                             packages,
                         )
                         .await;
+                        log_perf(&format!(
+                            "startup.hydration.apply_packages_ms={map_ms:.1}"
+                        ));
                     }
                 }
                 Err(err) => {
@@ -151,6 +292,8 @@ fn App() -> impl IntoView {
                     }
                 }
             }
+            let hydration_total_ms = perf_now_ms() - hydration_started;
+            log_perf(&format!("startup.hydration.total_ms={hydration_total_ms:.1}"));
             deferred_running_sig.set(false);
         });
     });
@@ -167,42 +310,44 @@ fn App() -> impl IntoView {
         })
     });
 
-    Effect::new(move |_| {
-        let started = js_sys::Date::now();
-        let computed = rows.with(|all| {
-            run_search(
-                all,
-                &query.get(),
-                selected_platform.get().as_deref(),
-                all_platforms.get(),
-                120,
-            )
-        });
-        search_results.set(computed);
-        last_search_latency_ms.set(Some(js_sys::Date::now() - started));
+    Effect::new({
+        let search_dispatch = Rc::clone(&search_dispatch);
+        move |_| {
+            // Track rows without cloning full dataset in the effect trigger.
+            rows.with(|_| {});
+
+            search_dispatch(SearchMsg::RunSearch {
+                query: query.get(),
+                selected_platform: selected_platform.get(),
+                all_platforms: all_platforms.get(),
+            });
+        }
     });
 
     let selected = move || {
         let target = selected_attr.get();
-        search_results
-            .get()
-            .matched
-            .into_iter()
-            .chain(search_results.get().others)
-            .into_iter()
-            .map(|sp| MockRow { pkg: sp.package })
-            .find(|r| Some(r.pkg.attr_path.clone()) == target)
+        search_results.with(|results| {
+            results
+                .matched
+                .iter()
+                .chain(results.others.iter())
+                .find(|sp| Some(sp.package.attr_path.clone()) == target)
+                .map(|sp| MockRow {
+                    pkg: sp.package.clone(),
+                })
+        })
     };
 
     Effect::new(move |_| {
         let current = selected_attr.get();
-        let all = search_results
-            .get()
-            .matched
-            .into_iter()
-            .chain(search_results.get().others)
-            .map(|sp| sp.package.attr_path)
-            .collect::<Vec<_>>();
+        let all = search_results.with(|results| {
+            results
+                .matched
+                .iter()
+                .chain(results.others.iter())
+                .map(|sp| sp.package.attr_path.clone())
+                .collect::<Vec<_>>()
+        });
         let still_exists = current
             .as_ref()
             .map(|c| all.iter().any(|a| a == c))
@@ -225,9 +370,13 @@ fn App() -> impl IntoView {
                 <div class="header-actions">
                     <button
                         class="diagnostics-btn"
-                        prop:disabled=move || diagnostics_loading.get()
                         on:click={
                             move |_| {
+                                if diagnostics_visible.get_untracked() {
+                                    diagnostics_visible.set(false);
+                                    return;
+                                }
+
                                 if diagnostics_loading.get_untracked() {
                                     return;
                                 }
@@ -250,6 +399,8 @@ fn App() -> impl IntoView {
                         {move || {
                             if diagnostics_loading.get() {
                                 "Running Diagnostics..."
+                            } else if diagnostics_visible.get() {
+                                "Hide Diagnostics"
                             } else {
                                 "Storage Diagnostics"
                             }
@@ -278,6 +429,7 @@ fn App() -> impl IntoView {
                                 let refresh_progress_detail_sig = refresh_progress_detail;
 
                                 spawn_local(async move {
+                                    let refresh_started = perf_now_ms();
                                     match cache_sync::force_refresh_with_progress(move |progress| {
                                         refresh_progress_pct_sig.set(progress.percent);
                                         refresh_progress_detail_sig.set(progress.detail);
@@ -286,7 +438,7 @@ fn App() -> impl IntoView {
                                     {
                                         Ok((packages, outcome)) => {
                                             if !packages.is_empty() {
-                                                apply_packages_async(
+                                                let apply_ms = apply_packages_async(
                                                     rows_sig,
                                                     selected_attr_sig,
                                                     selected_platform_sig,
@@ -294,6 +446,9 @@ fn App() -> impl IntoView {
                                                     packages,
                                                 )
                                                 .await;
+                                                log_perf(&format!(
+                                                    "refresh.apply_packages_ms={apply_ms:.1}"
+                                                ));
                                             }
                                             cache_status_sig.set(format_refresh_status(outcome));
                                             app_state.set(AppState::Ready);
@@ -308,6 +463,8 @@ fn App() -> impl IntoView {
                                             app_state.set(AppState::Error);
                                         }
                                     }
+                                    let refresh_total_ms = perf_now_ms() - refresh_started;
+                                    log_perf(&format!("refresh.total_ms={refresh_total_ms:.1}"));
                                     refresh_loading_sig.set(false);
                                 });
                             }
@@ -380,6 +537,7 @@ fn App() -> impl IntoView {
                                                 let reset_cache_loading_sig = reset_cache_loading;
                                                 let reset_cache_result_sig = reset_cache_result;
                                                 let diagnostics_report_sig = diagnostics_report;
+                                                let diagnostics_loading_sig = diagnostics_loading;
                                                 let cache_status_sig = cache_status;
 
                                                 spawn_local(async move {
@@ -388,9 +546,12 @@ fn App() -> impl IntoView {
 
                                                     match cache_sync::reset_local_cache().await {
                                                         Ok(()) => {
-                                                            diagnostics_report_sig.set(None);
+                                                            diagnostics_loading_sig.set(true);
+                                                            let refreshed = cache_sync::run_storage_diagnostics().await;
+                                                            diagnostics_report_sig.set(Some(refreshed));
+                                                            diagnostics_loading_sig.set(false);
                                                             reset_cache_result_sig.set(Some(
-                                                                "Local browser cache reset. Run Storage Diagnostics and then Refresh Cache."
+                                                                "Local browser cache reset. Diagnostics refreshed automatically; storage estimate may lag while IDB entry counts reflect reset state."
                                                                     .to_string(),
                                                             ));
                                                             cache_status_sig.set(format!(
@@ -416,13 +577,6 @@ fn App() -> impl IntoView {
                                                 "Reset Local Cache"
                                             }
                                         }}
-                                    </button>
-
-                                    <button
-                                        class="diagnostics-close"
-                                        on:click=move |_| diagnostics_visible.set(false)
-                                    >
-                                        "Close"
                                     </button>
                                 </div>
                             </div>
@@ -459,6 +613,36 @@ fn App() -> impl IntoView {
 
                                                 <dt>"Storage quota"</dt>
                                                 <dd>{format_storage_bytes(report.estimate_quota_bytes)}</dd>
+
+                                                <dt>"IndexedDB package entries"</dt>
+                                                <dd>{report
+                                                    .indexeddb_package_entries
+                                                    .map(|n| n.to_string())
+                                                    .unwrap_or_else(|| "n/a".to_string())}</dd>
+
+                                                <dt>"IndexedDB meta entries"</dt>
+                                                <dd>{report
+                                                    .indexeddb_meta_entries
+                                                    .map(|n| n.to_string())
+                                                    .unwrap_or_else(|| "n/a".to_string())}</dd>
+
+                                                <dt>"localStorage entries"</dt>
+                                                <dd>{report
+                                                    .local_storage_entries
+                                                    .map(|n| n.to_string())
+                                                    .unwrap_or_else(|| "n/a".to_string())}</dd>
+
+                                                <dt>"sessionStorage entries"</dt>
+                                                <dd>{report
+                                                    .session_storage_entries
+                                                    .map(|n| n.to_string())
+                                                    .unwrap_or_else(|| "n/a".to_string())}</dd>
+
+                                                <dt>"CacheStorage caches"</dt>
+                                                <dd>{report
+                                                    .cache_storage_entries
+                                                    .map(|n| n.to_string())
+                                                    .unwrap_or_else(|| "n/a".to_string())}</dd>
 
                                                 <dt>"IndexedDB write probe"</dt>
                                                 <dd>{bool_label(Some(report.indexeddb_write_ok))}</dd>
@@ -541,8 +725,12 @@ fn App() -> impl IntoView {
                             class="search-input"
                             type="search"
                             placeholder="Search packages"
-                            prop:value=move || query_raw.get()
-                            on:input=move |ev| query_raw.set(event_target_value(&ev))
+                            on:input={
+                                let search_dispatch = Rc::clone(&search_dispatch);
+                                move |ev| {
+                                    search_dispatch(SearchMsg::InputChanged(event_target_value(&ev)));
+                                }
+                            }
                         />
                         <div class="search-controls">
                             <label class="platform-toggle">
@@ -612,17 +800,23 @@ fn App() -> impl IntoView {
                                 .into_any();
                             }
 
-                            let r = search_results.get();
-                            let matched_rows = r
-                                .matched
-                                .into_iter()
-                                .map(|sp| MockRow { pkg: sp.package })
-                                .collect::<Vec<_>>();
-                            let others_rows = r
-                                .others
-                                .into_iter()
-                                .map(|sp| MockRow { pkg: sp.package })
-                                .collect::<Vec<_>>();
+                            let (matched_rows, others_rows) = search_results.with(|r| {
+                                let matched = r
+                                    .matched
+                                    .iter()
+                                    .map(|sp| MockRow {
+                                        pkg: sp.package.clone(),
+                                    })
+                                    .collect::<Vec<_>>();
+                                let others = r
+                                    .others
+                                    .iter()
+                                    .map(|sp| MockRow {
+                                        pkg: sp.package.clone(),
+                                    })
+                                    .collect::<Vec<_>>();
+                                (matched, others)
+                            });
 
                             if matched_rows.is_empty() && others_rows.is_empty() {
                                 return view! {
@@ -738,18 +932,20 @@ async fn apply_packages_async(
     selected_platform: RwSignal<Option<String>>,
     progress: Option<(RwSignal<String>, RwSignal<f64>)>,
     packages: Vec<Package>,
-) {
+) -> f64 {
+    let started = perf_now_ms();
+
     if packages.is_empty() {
         rows.set(Vec::new());
         selected_attr.set(None);
         selected_platform.set(None);
-        return;
+        return perf_now_ms() - started;
     }
 
     let total = packages.len();
     let mut mapped = Vec::with_capacity(total);
-    const CHUNK_SIZE: usize = 200;
-    const PROGRESS_UPDATE_EVERY: usize = 1000;
+    const CHUNK_SIZE: usize = 400;
+    const PROGRESS_UPDATE_EVERY: usize = 2000;
 
     set_progress(
         &progress,
@@ -795,6 +991,8 @@ async fn apply_packages_async(
     selected_attr.set(first_attr);
     selected_platform.set(effective_platform);
     set_progress(&progress, "Startup complete.".to_string(), 1.0);
+
+    perf_now_ms() - started
 }
 
 fn set_progress(progress: &Option<(RwSignal<String>, RwSignal<f64>)>, message: String, pct: f64) {
@@ -929,7 +1127,16 @@ fn browser_origin_label() -> String {
         .unwrap_or_else(|| "this origin".to_string())
 }
 
+fn perf_now_ms() -> f64 {
+    js_sys::Date::now()
+}
+
+fn log_perf(message: &str) {
+    web_sys::console::log_1(&format!("[perf][web] {message}").into());
+}
+
 pub fn mount_app() {
+    #[cfg(debug_assertions)]
     console_error_panic_hook::set_once();
     mount_to_body(App);
 }

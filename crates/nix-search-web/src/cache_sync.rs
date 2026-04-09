@@ -4,6 +4,7 @@ use js_sys::{Function, Promise, Reflect};
 use nix_search_core::types::Package;
 use rexie::{ObjectStore, Rexie, TransactionMode};
 use serde::{Deserialize, Serialize};
+use std::io::Read;
 use std::collections::HashSet;
 use thiserror::Error;
 use js_sys::wasm_bindgen::{JsCast, JsValue};
@@ -17,6 +18,7 @@ const STORE_META: &str = "meta";
 const META_KEY_CURRENT: &str = "current";
 const META_KEY_DIAGNOSTICS_PROBE: &str = "__storage_diag_probe__";
 const REMOTE_MANIFEST_CANDIDATES: &[&str] = &["data/manifest.json", "/data/manifest.json", "manifest.json"];
+const ENABLE_STALE_PRUNE_ON_REFRESH: bool = false;
 
 #[derive(Debug, Clone)]
 pub struct StorageDiagnosticsReport {
@@ -27,6 +29,11 @@ pub struct StorageDiagnosticsReport {
     pub persist_granted: Option<bool>,
     pub estimate_usage_bytes: Option<f64>,
     pub estimate_quota_bytes: Option<f64>,
+    pub indexeddb_package_entries: Option<usize>,
+    pub indexeddb_meta_entries: Option<usize>,
+    pub local_storage_entries: Option<usize>,
+    pub session_storage_entries: Option<usize>,
+    pub cache_storage_entries: Option<usize>,
     pub indexeddb_write_ok: bool,
     pub indexeddb_error: Option<String>,
     pub notes: Vec<String>,
@@ -50,6 +57,9 @@ pub struct RemoteManifest {
     pub package_count: usize,
     pub built_at: u64,
     pub artifact: String,
+    pub compressed_artifact: Option<String>,
+    pub compressed_format: Option<String>,
+    pub compressed_size_bytes: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -181,20 +191,42 @@ where
         return Ok((Vec::new(), RefreshStatus::UpToDate(meta)));
     }
 
-    let artifact_url = resolve_artifact_url(&manifest_source, &manifest.artifact);
+    let artifact_candidates = artifact_candidates(&manifest, &manifest_source);
+
     emit_refresh(&mut on_progress, 18, "Downloading package snapshot...");
-    log_debug(&format!(
-        "refresh: downloading artifact from '{}'",
-        artifact_url
-    ));
-    let prepared = match fetch_artifact(&artifact_url).await {
-        Ok(p) => p,
-        Err(err) => {
-            log_debug(&format!("refresh: artifact download failed: {err}"));
+    let mut prepared = None;
+    let mut last_err = None;
+
+    for candidate in &artifact_candidates {
+        log_debug(&format!(
+            "refresh: downloading artifact from '{}' (compressed={})",
+            candidate.url, candidate.compressed
+        ));
+        match fetch_artifact(candidate).await {
+            Ok(p) => {
+                prepared = Some(p);
+                break;
+            }
+            Err(err) => {
+                log_debug(&format!(
+                    "refresh: artifact candidate failed '{}' (compressed={}): {err}",
+                    candidate.url, candidate.compressed
+                ));
+                last_err = Some(err.to_string());
+            }
+        }
+    }
+
+    let prepared = match prepared {
+        Some(p) => p,
+        None => {
             emit_refresh(&mut on_progress, 100, "Snapshot download failed");
             return Ok((
                 Vec::new(),
-                RefreshStatus::Failed(format!("download failed: {err}")),
+                RefreshStatus::Failed(format!(
+                    "download failed: {}",
+                    last_err.unwrap_or_else(|| "all artifact candidates failed".to_string())
+                )),
             ));
         }
     };
@@ -252,9 +284,13 @@ where
         }
     }
 
-    if let Err(err) = prune_stale_packages_with_progress(&prepared.packages, &mut on_progress).await {
-        // Pruning is best-effort: keep refresh successful even if cleanup fails.
-        log_debug(&format!("refresh: stale-key pruning skipped due to error: {err}"));
+    if ENABLE_STALE_PRUNE_ON_REFRESH {
+        if let Err(err) = prune_stale_packages_with_progress(&prepared.packages, &mut on_progress).await {
+            // Pruning is best-effort: keep refresh successful even if cleanup fails.
+            log_debug(&format!("refresh: stale-key pruning skipped due to error: {err}"));
+        }
+    } else {
+        log_debug("refresh: stale-key pruning disabled on foreground refresh path");
     }
 
     log_debug("refresh: cache replace succeeded");
@@ -272,6 +308,11 @@ pub async fn run_storage_diagnostics() -> StorageDiagnosticsReport {
         persist_granted: None,
         estimate_usage_bytes: None,
         estimate_quota_bytes: None,
+        indexeddb_package_entries: None,
+        indexeddb_meta_entries: None,
+        local_storage_entries: None,
+        session_storage_entries: None,
+        cache_storage_entries: None,
         indexeddb_write_ok: false,
         indexeddb_error: None,
         notes: Vec::new(),
@@ -324,6 +365,39 @@ pub async fn run_storage_diagnostics() -> StorageDiagnosticsReport {
         }
     }
 
+    match read_indexeddb_counts().await {
+        Ok((package_entries, meta_entries)) => {
+            report.indexeddb_package_entries = Some(package_entries);
+            report.indexeddb_meta_entries = Some(meta_entries);
+
+            if package_entries == 0 {
+                report.notes.push(
+                    "IndexedDB package store is empty; storage.estimate() may still show origin-wide retained usage"
+                        .to_string(),
+                );
+            }
+        }
+        Err(err) => {
+            report
+                .notes
+                .push(format!("IndexedDB entry count probe failed: {err}"));
+        }
+    }
+
+    match read_other_storage_surface_counts().await {
+        Ok(other) => {
+            report.local_storage_entries = other.local_storage_entries;
+            report.session_storage_entries = other.session_storage_entries;
+            report.cache_storage_entries = other.cache_storage_entries;
+            report.notes.extend(other.notes);
+        }
+        Err(err) => {
+            report
+                .notes
+                .push(format!("Other storage surface probe failed: {err}"));
+        }
+    }
+
     report
 }
 
@@ -355,7 +429,184 @@ pub async fn reset_local_cache() -> Result<(), CacheError> {
         .await
         .map_err(|e| CacheError::DbTx(format!("commit reset tx failed: {e}")))?;
 
+    let (package_entries, meta_entries) = read_indexeddb_counts().await?;
+    if package_entries != 0 || meta_entries != 0 {
+        return Err(CacheError::DbTx(format!(
+            "reset verification failed: packages={package_entries} meta={meta_entries}"
+        )));
+    }
+
+    clear_other_storage_surfaces().await?;
+
     Ok(())
+}
+
+#[derive(Default)]
+struct OtherStorageSurfaceCounts {
+    local_storage_entries: Option<usize>,
+    session_storage_entries: Option<usize>,
+    cache_storage_entries: Option<usize>,
+    notes: Vec<String>,
+}
+
+async fn read_other_storage_surface_counts() -> Result<OtherStorageSurfaceCounts, CacheError> {
+    let mut out = OtherStorageSurfaceCounts::default();
+
+    match count_window_storage_entries("localStorage").await {
+        Ok(v) => out.local_storage_entries = Some(v),
+        Err(err) => out.notes.push(format!("localStorage probe: {err}")),
+    }
+    match count_window_storage_entries("sessionStorage").await {
+        Ok(v) => out.session_storage_entries = Some(v),
+        Err(err) => out.notes.push(format!("sessionStorage probe: {err}")),
+    }
+    match count_cache_storage_entries().await {
+        Ok(v) => out.cache_storage_entries = Some(v),
+        Err(err) => out.notes.push(format!("CacheStorage probe: {err}")),
+    }
+
+    Ok(out)
+}
+
+async fn clear_other_storage_surfaces() -> Result<(), CacheError> {
+    clear_window_storage("localStorage")
+        .await
+        .map_err(CacheError::DbTx)?;
+    clear_window_storage("sessionStorage")
+        .await
+        .map_err(CacheError::DbTx)?;
+    clear_cache_storage_entries().await.map_err(CacheError::DbTx)?;
+    Ok(())
+}
+
+async fn count_window_storage_entries(storage_name: &str) -> Result<usize, String> {
+    let storage = get_window_property(storage_name)?;
+    if storage.is_null() || storage.is_undefined() {
+        return Ok(0);
+    }
+    Reflect::get(&storage, &JsValue::from_str("length"))
+        .map_err(|e| format!("{storage_name}.length read failed: {}", js_value_to_string(&e)))?
+        .as_f64()
+        .map(|v| v as usize)
+        .ok_or_else(|| format!("{storage_name}.length is not numeric"))
+}
+
+async fn clear_window_storage(storage_name: &str) -> Result<(), String> {
+    let storage = get_window_property(storage_name)?;
+    if storage.is_null() || storage.is_undefined() {
+        return Ok(());
+    }
+
+    let clear_fn = Reflect::get(&storage, &JsValue::from_str("clear"))
+        .map_err(|e| format!("{storage_name}.clear read failed: {}", js_value_to_string(&e)))?
+        .dyn_into::<Function>()
+        .map_err(|_| format!("{storage_name}.clear is not callable"))?;
+
+    clear_fn
+        .call0(&storage)
+        .map_err(|e| format!("{storage_name}.clear failed: {}", js_value_to_string(&e)))?;
+    Ok(())
+}
+
+async fn count_cache_storage_entries() -> Result<usize, String> {
+    let caches = get_window_property("caches")?;
+    if caches.is_null() || caches.is_undefined() {
+        return Ok(0);
+    }
+
+    let keys_value = call_method0_promise(&caches, "keys").await?;
+    Ok(js_sys::Array::from(&keys_value).length() as usize)
+}
+
+async fn clear_cache_storage_entries() -> Result<usize, String> {
+    let caches = get_window_property("caches")?;
+    if caches.is_null() || caches.is_undefined() {
+        return Ok(0);
+    }
+
+    let keys_value = call_method0_promise(&caches, "keys").await?;
+    let keys = js_sys::Array::from(&keys_value);
+
+    let mut deleted = 0usize;
+    for key in keys.iter() {
+        let deleted_value = call_method1_promise(&caches, "delete", &key).await?;
+        if deleted_value.as_bool().unwrap_or(false) {
+            deleted += 1;
+        }
+    }
+
+    Ok(deleted)
+}
+
+fn get_window_property(name: &str) -> Result<JsValue, String> {
+    let window = web_sys::window().ok_or_else(|| "window unavailable".to_string())?;
+    Reflect::get(&JsValue::from(window), &JsValue::from_str(name))
+        .map_err(|e| format!("window.{name} read failed: {}", js_value_to_string(&e)))
+}
+
+async fn call_method0_promise(obj: &JsValue, method: &str) -> Result<JsValue, String> {
+    let method_value = Reflect::get(obj, &JsValue::from_str(method))
+        .map_err(|e| format!("{method} read failed: {}", js_value_to_string(&e)))?;
+    let function = method_value
+        .dyn_into::<Function>()
+        .map_err(|_| format!("{method} is not callable"))?;
+    let promise_value = function
+        .call0(obj)
+        .map_err(|e| format!("{method} call failed: {}", js_value_to_string(&e)))?;
+    let promise = promise_value
+        .dyn_into::<Promise>()
+        .map_err(|_| format!("{method} did not return Promise"))?;
+    JsFuture::from(promise)
+        .await
+        .map_err(|e| format!("{method} promise rejected: {}", js_value_to_string(&e)))
+}
+
+async fn call_method1_promise(obj: &JsValue, method: &str, arg: &JsValue) -> Result<JsValue, String> {
+    let method_value = Reflect::get(obj, &JsValue::from_str(method))
+        .map_err(|e| format!("{method} read failed: {}", js_value_to_string(&e)))?;
+    let function = method_value
+        .dyn_into::<Function>()
+        .map_err(|_| format!("{method} is not callable"))?;
+    let promise_value = function
+        .call1(obj, arg)
+        .map_err(|e| format!("{method} call failed: {}", js_value_to_string(&e)))?;
+    let promise = promise_value
+        .dyn_into::<Promise>()
+        .map_err(|_| format!("{method} did not return Promise"))?;
+    JsFuture::from(promise)
+        .await
+        .map_err(|e| format!("{method} promise rejected: {}", js_value_to_string(&e)))
+}
+
+async fn read_indexeddb_counts() -> Result<(usize, usize), CacheError> {
+    let db = open_db().await?;
+    let tx = db
+        .transaction(&[STORE_PACKAGES, STORE_META], TransactionMode::ReadOnly)
+        .map_err(|e| CacheError::DbTx(format!("open diagnostics count tx failed: {e}")))?;
+
+    let packages_store = tx
+        .store(STORE_PACKAGES)
+        .map_err(|e| CacheError::DbTx(format!("open package count store failed: {e}")))?;
+    let meta_store = tx
+        .store(STORE_META)
+        .map_err(|e| CacheError::DbTx(format!("open meta count store failed: {e}")))?;
+
+    let package_entries = packages_store
+        .get_all_keys(None, None)
+        .await
+        .map_err(|e| CacheError::DbTx(format!("count package keys failed: {e}")))?
+        .len();
+    let meta_entries = meta_store
+        .get_all_keys(None, None)
+        .await
+        .map_err(|e| CacheError::DbTx(format!("count meta keys failed: {e}")))?
+        .len();
+
+    tx.done()
+        .await
+        .map_err(|e| CacheError::DbTx(format!("commit diagnostics count tx failed: {e}")))?;
+
+    Ok((package_entries, meta_entries))
 }
 
 async fn open_db() -> Result<Rexie, CacheError> {
@@ -647,8 +898,39 @@ async fn fetch_remote_manifest() -> Result<(RemoteManifest, String), CacheError>
     )))
 }
 
-async fn fetch_artifact(artifact: &str) -> Result<PreparedData, CacheError> {
-    let resp = Request::get(artifact)
+#[derive(Debug, Clone)]
+struct ArtifactCandidate {
+    url: String,
+    compressed: bool,
+}
+
+fn artifact_candidates(manifest: &RemoteManifest, manifest_source: &str) -> Vec<ArtifactCandidate> {
+    let mut out = Vec::new();
+
+    if manifest
+        .compressed_format
+        .as_deref()
+        .map(|f| f.eq_ignore_ascii_case("brotli"))
+        .unwrap_or(false)
+    {
+        if let Some(compressed_artifact) = manifest.compressed_artifact.as_deref() {
+            out.push(ArtifactCandidate {
+                url: resolve_artifact_url(manifest_source, compressed_artifact),
+                compressed: true,
+            });
+        }
+    }
+
+    out.push(ArtifactCandidate {
+        url: resolve_artifact_url(manifest_source, &manifest.artifact),
+        compressed: false,
+    });
+
+    out
+}
+
+async fn fetch_artifact(candidate: &ArtifactCandidate) -> Result<PreparedData, CacheError> {
+    let resp = Request::get(&candidate.url)
         .send()
         .await
         .map_err(|e| CacheError::Network(e.to_string()))?;
@@ -660,9 +942,23 @@ async fn fetch_artifact(artifact: &str) -> Result<PreparedData, CacheError> {
         )));
     }
 
-    resp.json::<PreparedData>()
-        .await
-        .map_err(|e| CacheError::Serde(e.to_string()))
+    if candidate.compressed {
+        let bytes = resp
+            .binary()
+            .await
+            .map_err(|e| CacheError::Serde(format!("failed to read compressed bytes: {e}")))?;
+        let mut decompressor = brotli::Decompressor::new(bytes.as_slice(), 4096);
+        let mut text = String::new();
+        decompressor
+            .read_to_string(&mut text)
+            .map_err(|e| CacheError::Serde(format!("brotli decode failed: {e}")))?;
+        serde_json::from_str::<PreparedData>(&text)
+            .map_err(|e| CacheError::Serde(format!("decompressed JSON parse failed: {e}")))
+    } else {
+        resp.json::<PreparedData>()
+            .await
+            .map_err(|e| CacheError::Serde(e.to_string()))
+    }
 }
 
 fn now_epoch() -> u64 {
@@ -794,6 +1090,14 @@ async fn probe_indexeddb_write() -> Result<(), CacheError> {
         .await
         .map_err(|e| CacheError::DbTx(format!("diagnostics write probe failed: {e}")))?;
 
+    store
+        .delete(
+            serde_wasm_bindgen::to_value(META_KEY_DIAGNOSTICS_PROBE)
+                .map_err(|e| CacheError::Serde(e.to_string()))?,
+        )
+        .await
+        .map_err(|e| CacheError::DbTx(format!("diagnostics cleanup delete failed: {e}")))?;
+
     tx.done()
         .await
         .map_err(|e| CacheError::DbTx(format!("commit diagnostics write tx failed: {e}")))?;
@@ -850,4 +1154,48 @@ fn is_probable_storage_unavailable_text(message: &str) -> bool {
         || lower.contains("notallowed")
         || lower.contains("security")
         || lower.contains("transactioninactive")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{RemoteManifest, artifact_candidates};
+
+    fn base_manifest() -> RemoteManifest {
+        RemoteManifest {
+            version: "v1".to_string(),
+            checksum: "abc".to_string(),
+            package_count: 1,
+            built_at: 0,
+            artifact: "packages-v1.json".to_string(),
+            compressed_artifact: None,
+            compressed_format: None,
+            compressed_size_bytes: None,
+        }
+    }
+
+    #[test]
+    fn artifact_candidates_prefers_compressed_then_fallback() {
+        let mut m = base_manifest();
+        m.compressed_artifact = Some("packages-v1.json.br".to_string());
+        m.compressed_format = Some("brotli".to_string());
+
+        let candidates = artifact_candidates(&m, "data/manifest.json");
+        assert_eq!(candidates.len(), 2);
+        assert_eq!(candidates[0].url, "data/packages-v1.json.br");
+        assert!(candidates[0].compressed);
+        assert_eq!(candidates[1].url, "data/packages-v1.json");
+        assert!(!candidates[1].compressed);
+    }
+
+    #[test]
+    fn artifact_candidates_uses_plain_only_without_supported_compression() {
+        let mut m = base_manifest();
+        m.compressed_artifact = Some("packages-v1.json.br".to_string());
+        m.compressed_format = Some("gzip".to_string());
+
+        let candidates = artifact_candidates(&m, "data/manifest.json");
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].url, "data/packages-v1.json");
+        assert!(!candidates[0].compressed);
+    }
 }

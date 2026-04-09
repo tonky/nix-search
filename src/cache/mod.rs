@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::types::{CacheMeta, EnrichedDetails};
@@ -59,6 +60,9 @@ pub fn store_enriched(
 }
 
 pub async fn update(cache_dir: &Path, channel: &str) -> anyhow::Result<()> {
+    let t_total = Instant::now();
+
+    let t_fetch = Instant::now();
     let prev = load_meta(cache_dir, channel);
     let fetch = fetch::fetch_dump(
         fetch::PKGFORGE_URL,
@@ -66,6 +70,7 @@ pub async fn update(cache_dir: &Path, channel: &str) -> anyhow::Result<()> {
         prev.as_ref().and_then(|m| m.last_modified.as_deref()),
     )
     .await?;
+    let fetch_ms = t_fetch.elapsed().as_millis();
 
     let now = now_epoch();
 
@@ -84,11 +89,22 @@ pub async fn update(cache_dir: &Path, channel: &str) -> anyhow::Result<()> {
             meta.etag = fetch.etag.or(meta.etag);
             meta.last_modified = fetch.last_modified.or(meta.last_modified);
             save_meta(cache_dir, channel, &meta)?;
+            eprintln!(
+                "[perf][cache-update] channel={} fetch_ms={} parse_ms=0 index_ms=0 meta_ms=0 total_ms={} status=not-modified",
+                channel,
+                fetch_ms,
+                t_total.elapsed().as_millis()
+            );
             Ok(())
         }
         Some(body) => {
+            let t_parse = Instant::now();
             let packages = parse::parse_dump(&body)?;
+            let parse_ms = t_parse.elapsed().as_millis();
+
+            let t_index = Instant::now();
             index::build(&index_dir(cache_dir, channel), &packages)?;
+            let index_ms = t_index.elapsed().as_millis();
 
             let meta = CacheMeta {
                 channel: channel.to_string(),
@@ -99,7 +115,22 @@ pub async fn update(cache_dir: &Path, channel: &str) -> anyhow::Result<()> {
                 es_url: prev.as_ref().and_then(|m| m.es_url.clone()),
                 es_term_field: prev.as_ref().and_then(|m| m.es_term_field.clone()),
             };
-            save_meta(cache_dir, channel, &meta)
+            let t_meta = Instant::now();
+            save_meta(cache_dir, channel, &meta)?;
+            let meta_ms = t_meta.elapsed().as_millis();
+
+            eprintln!(
+                "[perf][cache-update] channel={} fetch_ms={} parse_ms={} index_ms={} meta_ms={} total_ms={} package_count={} status=updated",
+                channel,
+                fetch_ms,
+                parse_ms,
+                index_ms,
+                meta_ms,
+                t_total.elapsed().as_millis(),
+                packages.len()
+            );
+
+            Ok(())
         }
     }
 }

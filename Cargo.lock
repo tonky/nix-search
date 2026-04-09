@@ -1944,6 +1944,7 @@ dependencies = [
  "dirs",
  "nix-search-core",
  "ratatui",
+ "rayon",
  "reqwest",
  "serde",
  "serde_json",
@@ -1967,6 +1968,7 @@ name = "nix-search-web"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "brotli",
  "clap",
  "console_error_panic_hook",
  "gloo-net",

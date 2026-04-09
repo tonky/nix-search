@@ -15,6 +15,13 @@ test.describe('nix-search web smoke', () => {
 
     await page.getByRole('button', { name: /refresh cache/i }).click();
 
+    // Prefer compressed snapshot when manifest advertises it.
+    const compressedResponse = await page.waitForResponse(
+      (response) => response.url().includes('.json.br') && response.status() === 200,
+      { timeout: 20_000 },
+    );
+    expect(compressedResponse.ok()).toBeTruthy();
+
     // Smoke-level assertion: refresh action is accepted and status transitions.
     await expect(status).toContainText(/refreshing|refresh/i, { timeout: 20_000 });
     const after = (await status.textContent()) ?? '';
@@ -33,5 +40,9 @@ test.describe('nix-search web smoke', () => {
     // UI remains interactive while hydration hint/progress can appear.
     await page.getByRole('searchbox').fill('zig');
     await expect(page.getByRole('searchbox')).toHaveValue('zig');
+
+    const perfStrip = page.locator('.perf-strip');
+    await expect(perfStrip).toContainText(/startup:/i);
+    await expect(perfStrip).toContainText(/search:/i);
   });
 });

@@ -8,6 +8,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 anyhow = "1.0.100"
+brotli = "8.0.2"
 clap = { version = "4.5.51", features = ["derive"] }
 leptos = { version = "0.8.11", features = ["csr"] }
 nix-search-core = { path = "../nix-search-core" }
