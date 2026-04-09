@@ -35,7 +35,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Build prep command
-        run: cargo build --bin nix-search
+        run: cargo build --release --bin nix-search
 
       - name: Install Trunk
         uses: taiki-e/install-action@v2
@@ -53,7 +53,7 @@ jobs:
           fi
 
       - name: Run local prep command
-        run: cargo run -- prep-web --output tmp/pages-data
+        run: cargo run --release -- prep-web --output tmp/pages-data
 
       - name: Sync prepared data into web static assets
         run: |
