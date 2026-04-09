@@ -31,6 +31,19 @@ jobs:
       - name: Ensure wasm target is available
         run: rustup target add wasm32-unknown-unknown
 
+      - name: Prepare web data for budget checks
+        run: |
+          cargo run --release -- prep-web --output tmp/pages-data
+          mkdir -p crates/nix-search-web/static/data
+          rm -f crates/nix-search-web/static/data/packages-*.json
+          rm -f crates/nix-search-web/static/data/packages-*.json.br
+          cp tmp/pages-data/manifest.json crates/nix-search-web/static/data/manifest.json
+          cp tmp/pages-data/$(jq -r '.artifact' tmp/pages-data/manifest.json) crates/nix-search-web/static/data/
+          compressed=$(jq -r '.compressed_artifact // empty' tmp/pages-data/manifest.json)
+          if [[ -n "$compressed" ]] && [[ -f "tmp/pages-data/$compressed" ]]; then
+            cp "tmp/pages-data/$compressed" crates/nix-search-web/static/data/
+          fi
+
       - name: Run perf/size budget checks
         run: |
           PERF_MODE=full \
