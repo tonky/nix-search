@@ -1,0 +1,10 @@
+{
+  "version": "sha256-5baf0491bca5",
+  "checksum": "5baf0491bca56988c9517c4595d517475b7868a4a7ed3a4e0eb6754e4a859213",
+  "package_count": 142840,
+  "built_at": 1775712228,
+  "artifact": "packages-sha256-5baf0491bca5.json",
+  "compressed_artifact": "packages-sha256-5baf0491bca5.json.br",
+  "compressed_format": "brotli",
+  "compressed_size_bytes": 3127106
+}

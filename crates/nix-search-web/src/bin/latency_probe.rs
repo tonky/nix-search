@@ -74,6 +74,7 @@ fn main() -> anyhow::Result<()> {
     let avg = timings.iter().sum::<f64>() / timings.len().max(1) as f64;
     let p50 = percentile(&timings, 0.50);
     let p95 = percentile(&timings, 0.95);
+    let p99 = percentile(&timings, 0.99);
 
     println!("artifact={}", cli.artifact.display());
     println!("rows={}", rows.len());
@@ -82,6 +83,7 @@ fn main() -> anyhow::Result<()> {
     println!("search_avg_ms={:.2}", avg);
     println!("search_p50_ms={:.2}", p50);
     println!("search_p95_ms={:.2}", p95);
+    println!("search_p99_ms={:.2}", p99);
 
     Ok(())
 }

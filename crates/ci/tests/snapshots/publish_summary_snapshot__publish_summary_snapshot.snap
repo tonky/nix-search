@@ -1,0 +1,11 @@
+---
+source: crates/ci/tests/publish_summary_snapshot.rs
+expression: summary
+---
+# WASM Site Publish
+
+- Version: sha256-test
+- Package count: 123
+- Checksum: checksum-test
+- Page URL: https://example.invalid/nix-search/
+- Manifest URL: https://example.invalid/nix-search/data/manifest.json

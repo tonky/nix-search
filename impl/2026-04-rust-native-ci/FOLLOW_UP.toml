@@ -1,0 +1,5 @@
+[[item]]
+title = "Bootstrap the first ci image publish and make the GHCR package public"
+
+[[item]]
+title = "Enable pull_request on perf-size-budget-rs after first clean dispatch run"

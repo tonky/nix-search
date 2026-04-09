@@ -1,0 +1,37 @@
+---
+source: crates/ci/tests/report_render.rs
+expression: report.to_markdown()
+---
+# Perf Size Budget
+
+- Mode: quick
+- Trunk build: skipped
+- Latency probe: skipped
+- Failures: 0
+- Warnings: 1
+
+## Measurements
+
+| Artifact | Raw bytes | Brotli bytes |
+| --- | ---: | ---: |
+| wasm | 665164 | 194449 |
+| js | 54688 | 7899 |
+| data | 24913134 | 2247291 |
+
+## Thresholds
+
+| Metric | Value | Limit | Status |
+| --- | ---: | ---: | --- |
+| wasm raw | 665164 | 4500000 | PASS |
+| wasm brotli | 194449 | 800000 | PASS |
+| js raw | 54688 | 100000 | PASS |
+| js brotli | 7899 | 12000 | PASS |
+| data brotli | 2247291 | 2600000 | info |
+
+## Notes
+
+- latency probe skipped
+
+## Warnings
+
+- WARN data brotli budget is informational in quick mode (measured with q=4)

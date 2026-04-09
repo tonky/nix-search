@@ -1,0 +1,39 @@
+name: Perf and Size Budget (rs)
+
+on:
+  workflow_dispatch:
+  # pull_request:
+  #   # Enable after the first successful dispatch smoke run and parity check.
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  budget:
+    runs-on: ubuntu-latest
+    container: ghcr.io/tonky/nix-search-ci:1924186116c8e55e673d12f6fd48772ed75b9d2c
+    env:
+      PERF_MODE: full
+      SEARCH_P95_WARN_MS: "45"
+      SEARCH_P95_FAIL_MS: "120"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Verify baked image matches source
+        run: scripts/ci/verify-image.sh
+
+      - name: Run perf/size budget checks
+        run: ci budget --out tmp/bench/perf-size-ci
+
+      - name: Upload perf/size artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: perf-size-ci-rs
+          path: tmp/bench/perf-size-ci

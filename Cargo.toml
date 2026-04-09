@@ -4,7 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [workspace]
-members = [".", "crates/nix-search-core", "crates/nix-search-web"]
+members = [".", "crates/nix-search-core", "crates/nix-search-web", "crates/ci"]
+default-members = ["."]
 resolver = "2"
 
 [[bin]]

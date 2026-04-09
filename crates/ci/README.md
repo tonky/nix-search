@@ -1,0 +1,1 @@
+This crate contains the Rust-native CI runner described in the feature notes under impl/2026-04-rust-native-ci and is the implementation target for the scaffolded pipeline work.
