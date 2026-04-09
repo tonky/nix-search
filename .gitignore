@@ -4,6 +4,7 @@
 tests/e2e/node_modules/
 tests/e2e/playwright-report/
 tests/e2e/test-results/
+tests/e2e/tmp/
 .flox/
 crates/nix-search-web/dist/
 crates/nix-search-web/static/data/
